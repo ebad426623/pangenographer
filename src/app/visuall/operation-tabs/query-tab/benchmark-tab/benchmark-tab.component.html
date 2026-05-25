@@ -85,6 +85,81 @@
         [disabled]="isRunning"
       />
     </label>
+
+    <label>
+      Custom name sample count
+      <input
+        type="number"
+        min="1"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="options.customNameSampleCount"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Custom sequence lengths (bp)
+      <input
+        type="text"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="customSequenceLengthsText"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Custom chain node count
+      <input
+        type="number"
+        min="2"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="options.customChainNodeCount"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Custom chain max jump lengths
+      <input
+        type="text"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="customChainMaxJumpLengthsText"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Custom chain min subseq match
+      <input
+        type="number"
+        min="0"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="options.customChainMinSubsequenceMatchLength"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Procedure pool radius
+      <input
+        type="number"
+        min="1"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="options.procedurePoolRadius"
+        [disabled]="isRunning"
+      />
+    </label>
+
+    <label>
+      Procedure pool min nodes
+      <input
+        type="number"
+        min="1"
+        class="form-control standard-input-height va-small-text"
+        [(ngModel)]="options.procedurePoolMinNodes"
+        [disabled]="isRunning"
+      />
+    </label>
   </div>
 
   <label class="w-100 mt-2">
@@ -96,6 +171,21 @@
       rows="3"
       placeholder="Optional. Leave empty to auto-pick high-degree SEGMENT seeds."
     ></textarea>
+  </label>
+
+  <label
+    class="form-check mt-2"
+    title="When on, seeds for graph of interest and common stream come from the neighborhood pool of a top-degree anchor (guaranteed connected). When off, top-degree segments are used directly."
+  >
+    <input
+      class="form-check-input"
+      type="checkbox"
+      [(ngModel)]="options.useProcedurePool"
+      [disabled]="isRunning"
+    />
+    <span class="form-check-label">
+      Use procedure pool for graph of interest / common stream
+    </span>
   </label>
 
   <div class="benchmark-cases">

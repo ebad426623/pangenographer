@@ -201,7 +201,6 @@ export class CytoscapeService {
 
     let cyEdges = [];
     let collapsedEdgeIds: Record<string, string> = {};
-    console.log("collapsedEdgeIds: ", collapsedEdgeIds);
     if (isIncremental) {
       collapsedEdgeIds = this.getCollapsedEdgeIds();
     }

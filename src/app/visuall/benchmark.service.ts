@@ -16,7 +16,10 @@ export type BenchmarkCaseKey =
   | "cypher-neighborhood"
   | "pg2-neighborhood"
   | "pg2-graph-of-interest"
-  | "pg2-common-stream";
+  | "pg2-common-stream"
+  | "custom-name-search"
+  | "custom-sequence-search"
+  | "custom-sequence-chain";
 
 export interface BenchmarkCaseDefinition {
   key: BenchmarkCaseKey;
@@ -60,6 +63,21 @@ export const BENCHMARK_CASES: BenchmarkCaseDefinition[] = [
     label: "PG2 procedure: common stream",
     rendersGraph: true,
   },
+  {
+    key: "custom-name-search",
+    label: "Custom: search by segment name",
+    rendersGraph: true,
+  },
+  {
+    key: "custom-sequence-search",
+    label: "Custom: search by segment sequence",
+    rendersGraph: true,
+  },
+  {
+    key: "custom-sequence-chain",
+    label: "Custom: search by sequence chain",
+    rendersGraph: true,
+  },
 ];
 
 export interface BenchmarkOptions {
@@ -73,6 +91,14 @@ export interface BenchmarkOptions {
   seedSegmentNames: string[];
   selectedCases: BenchmarkCaseKey[];
   layoutTimeoutMs: number;
+  customNameSampleCount: number;
+  customSequenceLengths: number[];
+  customChainNodeCount: number;
+  customChainMaxJumpLengths: number[];
+  customChainMinSubsequenceMatchLength: number;
+  useProcedurePool: boolean;
+  procedurePoolRadius: number;
+  procedurePoolMinNodes: number;
 }
 
 export interface BenchmarkRunResult {
@@ -105,6 +131,31 @@ interface BenchmarkSeed {
   degree?: number;
 }
 
+interface CustomSequenceSample {
+  length: number;
+  substring: string;
+  sourceName: string;
+}
+
+interface CustomChainSample {
+  maxJumpLength: number;
+  minSubsequenceMatchLength: number;
+  sequences: string[];
+  chainNodeNames: string[];
+}
+
+interface CustomQuerySamples {
+  names: string[];
+  sequenceSamples: CustomSequenceSample[];
+  chainSamples: CustomChainSample[];
+}
+
+interface ProcedurePoolNode {
+  id: string;
+  segmentName: string;
+  distance: number;
+}
+
 interface BuiltBenchmarkCase {
   key: BenchmarkCaseKey;
   label: string;
@@ -114,6 +165,7 @@ interface BuiltBenchmarkCase {
   renderGraph: boolean;
   query: string;
   toGraph?: (response: any) => GraphResponse;
+  seedsUsed?: BenchmarkSeed[];
 }
 
 interface RenderTiming {
@@ -141,13 +193,21 @@ export class BenchmarkService {
       warmupRuns: 1,
       measuredRuns: 5,
       graphLimits: [150, 500, 1000, 2500],
-      neighborhoodRadii: [1, 2, 3],
+      neighborhoodRadii: [2, 4, 6],
       procedurePageSize: 2500,
       cypherPathLimit: 2500,
       seedCount: 2,
       seedSegmentNames: [],
       selectedCases: BENCHMARK_CASES.map((x) => x.key),
       layoutTimeoutMs: 180000,
+      customNameSampleCount: 5,
+      customSequenceLengths: [5, 10, 20, 50, 100],
+      customChainNodeCount: 10,
+      customChainMaxJumpLengths: [0, 2],
+      customChainMinSubsequenceMatchLength: 2,
+      useProcedurePool: true,
+      procedurePoolRadius: 3,
+      procedurePoolMinNodes: 20,
     };
   }
 
@@ -162,7 +222,14 @@ export class BenchmarkService {
     this.isCancelled = false;
     const results: BenchmarkRunResult[] = [];
     const seeds = await this.resolveSeeds(options);
-    const cases = this.buildCases(options, seeds);
+    const customSamples = await this.resolveCustomQuerySamples(options);
+    const procedureSeeds = await this.resolveProcedureSeeds(options, seeds);
+    const cases = this.buildCases(
+      options,
+      seeds,
+      customSamples,
+      procedureSeeds,
+    );
     const totalRuns = options.warmupRuns + options.measuredRuns;
 
     for (const benchmarkCase of cases) {
@@ -245,6 +312,7 @@ export class BenchmarkService {
     options: BenchmarkOptions,
   ): Promise<BenchmarkRunResult> {
     const totalStart = performance.now();
+    const seedsForRow = benchmarkCase.seedsUsed ?? seeds;
     const baseResult: BenchmarkRunResult = {
       caseKey: benchmarkCase.key,
       caseLabel: benchmarkCase.label,
@@ -252,8 +320,8 @@ export class BenchmarkService {
       runIndex,
       measured,
       status: "ok",
-      seedIds: seeds.map((x) => x.id).join(";"),
-      seedNames: seeds.map((x) => x.segmentName).join(";"),
+      seedIds: seedsForRow.map((x) => x.id).join(";"),
+      seedNames: seedsForRow.map((x) => x.segmentName).join(";"),
     };
 
     try {
@@ -320,12 +388,19 @@ export class BenchmarkService {
   private buildCases(
     options: BenchmarkOptions,
     seeds: BenchmarkSeed[],
+    customSamples: CustomQuerySamples,
+    procedureSeeds: BenchmarkSeed[] | null,
   ): BuiltBenchmarkCase[] {
     const selected = new Set(options.selectedCases);
     const cases: BuiltBenchmarkCase[] = [];
     const seedIds = seeds.map((x) => this.cypherString(x.id));
     const firstSeedId = seedIds[0];
     const dbTimeout = this._g.userPreferences.dbTimeout.getValue() * 1000;
+    const cypherLimit = options.cypherPathLimit;
+    const procedurePageSize = options.procedurePageSize;
+    const procSeedsResolved =
+      procedureSeeds && procedureSeeds.length > 0 ? procedureSeeds : seeds;
+    const procSeedIds = procSeedsResolved.map((x) => this.cypherString(x.id));
 
     if (selected.has("database-summary")) {
       cases.push({
@@ -426,18 +501,20 @@ export class BenchmarkService {
       }
     }
 
-    if (selected.has("pg2-graph-of-interest") && seedIds.length > 0) {
+    if (selected.has("pg2-graph-of-interest") && procSeedIds.length > 0) {
+      const pooled = procSeedsResolved !== seeds;
       for (const radius of options.neighborhoodRadii) {
         cases.push({
           key: "pg2-graph-of-interest",
           label: "PG2 procedure: graph of interest",
-          params: `length=${radius}; pageSize=${options.procedurePageSize}`,
+          params: `length=${radius}; pageSize=${options.procedurePageSize}; seeds=${pooled ? "pool" : "top-degree"}`,
           responseType: DbResponseType.table,
           isTimeboxed: false,
           renderGraph: true,
           toGraph: this.tableResponseToGraph.bind(this),
+          seedsUsed: procSeedsResolved,
           query: `
-            CALL graphOfInterest([${seedIds.join(",")}], [], ${radius}, true,
+            CALL graphOfInterest([${procSeedIds.join(",")}], [], ${radius}, true,
               ${options.procedurePageSize}, 1, '', false, null, 2,
               {}, 0, 0, 0, ${dbTimeout}, null)
           `,
@@ -445,18 +522,20 @@ export class BenchmarkService {
       }
     }
 
-    if (selected.has("pg2-common-stream") && seedIds.length > 1) {
+    if (selected.has("pg2-common-stream") && procSeedIds.length > 1) {
+      const pooled = procSeedsResolved !== seeds;
       for (const radius of options.neighborhoodRadii) {
         cases.push({
           key: "pg2-common-stream",
           label: "PG2 procedure: common stream",
-          params: `length=${radius}; pageSize=${options.procedurePageSize}`,
+          params: `length=${radius}; pageSize=${options.procedurePageSize}; seeds=${pooled ? "pool" : "top-degree"}`,
           responseType: DbResponseType.table,
           isTimeboxed: false,
           renderGraph: true,
           toGraph: this.tableResponseToGraph.bind(this),
+          seedsUsed: procSeedsResolved,
           query: `
-            CALL commonStream([${seedIds.join(",")}], [], ${radius},
+            CALL commonStream([${procSeedIds.join(",")}], [], ${radius},
               ${Neo4jEdgeDirection.BOTH}, ${options.procedurePageSize}, 1,
               '', false, null, 2, {}, 0, 0, 0, ${dbTimeout}, null)
           `,
@@ -464,7 +543,421 @@ export class BenchmarkService {
       }
     }
 
+    if (selected.has("custom-name-search") && customSamples.names.length > 0) {
+      const quotedNames = customSamples.names
+        .map((n) => this.cypherString(n))
+        .join(",");
+      cases.push({
+        key: "custom-name-search",
+        label: "Custom: search by segment name",
+        params: `count=${customSamples.names.length}; limit=${cypherLimit}`,
+        responseType: DbResponseType.graph,
+        isTimeboxed: false,
+        renderGraph: true,
+        query: `
+          WITH [${quotedNames}] AS segmentNames
+          MATCH (segment:SEGMENT)
+          WHERE segment.segmentName IN segmentNames
+          RETURN segment
+          LIMIT ${cypherLimit}
+        `,
+      });
+    }
+
+    if (selected.has("custom-sequence-search")) {
+      for (const sample of customSamples.sequenceSamples) {
+        if (!sample.substring) {
+          continue;
+        }
+        cases.push({
+          key: "custom-sequence-search",
+          label: "Custom: search by segment sequence",
+          params: `length=${sample.length}; limit=${cypherLimit}`,
+          responseType: DbResponseType.graph,
+          isTimeboxed: false,
+          renderGraph: true,
+          query: `
+            WITH [${this.cypherString(sample.substring)}] AS sequences
+            MATCH (segment:SEGMENT)
+            WHERE any(sequence IN sequences WHERE segment.segmentData CONTAINS sequence)
+            OPTIONAL MATCH (segment)-[r]-(relatedSegment:SEGMENT)
+            WHERE any(sequence IN sequences WHERE relatedSegment.segmentData CONTAINS sequence)
+            RETURN DISTINCT segment, r, relatedSegment
+            LIMIT ${cypherLimit}
+          `,
+        });
+      }
+    }
+
+    if (selected.has("custom-sequence-chain")) {
+      for (const chain of customSamples.chainSamples) {
+        if (chain.sequences.length < 1) {
+          continue;
+        }
+        const quotedSequences = chain.sequences
+          .map((s) => this.cypherString(s))
+          .join(",");
+        cases.push({
+          key: "custom-sequence-chain",
+          label: "Custom: search by sequence chain",
+          params: `maxJump=${chain.maxJumpLength}; minMatch=${chain.minSubsequenceMatchLength}; chainNodes=${chain.sequences.length}`,
+          responseType: DbResponseType.table,
+          isTimeboxed: false,
+          renderGraph: true,
+          toGraph: this.tableResponseToGraph.bind(this),
+          query: `
+            CALL sequenceChainSearch([${quotedSequences}], ${chain.maxJumpLength},
+              ${chain.minSubsequenceMatchLength}, [], ${procedurePageSize}, 1, ${dbTimeout})
+            YIELD nodes, nodeClass, nodeElementId, edges, edgeClass, edgeElementId,
+              edgeSourceTargets, paths, indices
+            RETURN nodes, nodeClass, nodeElementId, edges, edgeClass, edgeElementId,
+              edgeSourceTargets, paths, indices
+          `,
+        });
+      }
+    }
+
     return cases;
+  }
+
+  private async resolveCustomQuerySamples(
+    options: BenchmarkOptions,
+  ): Promise<CustomQuerySamples> {
+    const selected = new Set(options.selectedCases);
+    const samples: CustomQuerySamples = {
+      names: [],
+      sequenceSamples: [],
+      chainSamples: [],
+    };
+
+    if (selected.has("custom-name-search")) {
+      samples.names = await this.sampleRandomNames(
+        Math.max(1, options.customNameSampleCount),
+      );
+    }
+
+    if (selected.has("custom-sequence-search")) {
+      samples.sequenceSamples = await this.sampleSequenceSubstrings(
+        options.customSequenceLengths,
+      );
+    }
+
+    if (selected.has("custom-sequence-chain")) {
+      samples.chainSamples = await this.sampleSequenceChains(
+        Math.max(2, options.customChainNodeCount),
+        options.customChainMaxJumpLengths,
+        options.customChainMinSubsequenceMatchLength,
+      );
+    }
+
+    return samples;
+  }
+
+  private async sampleRandomNames(count: number): Promise<string[]> {
+    const response = (await this._db.runQueryPromised(
+      `
+        MATCH (s:SEGMENT)
+        WITH s, rand() AS r
+        ORDER BY r
+        LIMIT ${count}
+        RETURN s.segmentName AS segmentName
+      `,
+      DbResponseType.table,
+      false,
+    )) as TableResponse;
+    const nameIndex = response.columns.indexOf("segmentName");
+    if (nameIndex < 0) {
+      return [];
+    }
+    return response.data
+      .map((row) => row[nameIndex])
+      .filter((x) => x !== undefined && x !== null)
+      .map((x) => String(x));
+  }
+
+  private async sampleSequenceSubstrings(
+    lengths: number[],
+  ): Promise<CustomSequenceSample[]> {
+    const samples: CustomSequenceSample[] = [];
+    for (const length of lengths) {
+      if (!Number.isFinite(length) || length < 1) {
+        continue;
+      }
+      const response = (await this._db.runQueryPromised(
+        `
+          MATCH (s:SEGMENT)
+          WHERE s.segmentLength >= ${length}
+          WITH s, rand() AS r
+          ORDER BY r
+          LIMIT 1
+          RETURN s.segmentName AS segmentName, s.segmentData AS segmentData
+        `,
+        DbResponseType.table,
+        false,
+      )) as TableResponse;
+      const nameIndex = response.columns.indexOf("segmentName");
+      const dataIndex = response.columns.indexOf("segmentData");
+      if (response.data.length < 1 || dataIndex < 0) {
+        continue;
+      }
+      const data = String(response.data[0][dataIndex] ?? "");
+      if (data.length < length) {
+        continue;
+      }
+      const maxStart = data.length - length;
+      const start = Math.floor(Math.random() * (maxStart + 1));
+      samples.push({
+        length,
+        substring: data.substring(start, start + length),
+        sourceName:
+          nameIndex >= 0 ? String(response.data[0][nameIndex] ?? "") : "",
+      });
+    }
+    return samples;
+  }
+
+  private async sampleSequenceChains(
+    nodeCount: number,
+    maxJumpLengths: number[],
+    minSubsequenceMatchLength: number,
+  ): Promise<CustomChainSample[]> {
+    const walk = await this.walkRandomChain(nodeCount);
+    if (walk.datas.length < 1) {
+      return [];
+    }
+
+    const chains: CustomChainSample[] = [];
+    for (const rawJump of maxJumpLengths) {
+      const maxJump = Math.max(0, Math.floor(rawJump));
+      const sequences: string[] = [];
+      const chainNodeNames: string[] = [];
+      let i = 0;
+      while (i < walk.datas.length) {
+        if (walk.datas[i]) {
+          sequences.push(walk.datas[i]);
+          chainNodeNames.push(walk.names[i]);
+        }
+        const stride =
+          maxJump > 0 ? 1 + Math.floor(Math.random() * (maxJump + 1)) : 1;
+        i += stride;
+      }
+      if (sequences.length < 1) {
+        continue;
+      }
+      chains.push({
+        maxJumpLength: maxJump,
+        minSubsequenceMatchLength: Math.max(0, minSubsequenceMatchLength),
+        sequences,
+        chainNodeNames,
+      });
+    }
+    return chains;
+  }
+
+  private async walkRandomChain(
+    nodeCount: number,
+  ): Promise<{ ids: string[]; names: string[]; datas: string[] }> {
+    const result = { ids: [] as string[], names: [] as string[], datas: [] as string[] };
+    const startResp = (await this._db.runQueryPromised(
+      `
+        MATCH (s:SEGMENT)
+        WITH s, rand() AS r
+        ORDER BY r
+        LIMIT 1
+        RETURN elementId(s) AS id, s.segmentName AS segmentName, s.segmentData AS segmentData
+      `,
+      DbResponseType.table,
+      false,
+    )) as TableResponse;
+    if (!startResp.data || startResp.data.length < 1) {
+      return result;
+    }
+    const idIndex = startResp.columns.indexOf("id");
+    const nameIndex = startResp.columns.indexOf("segmentName");
+    const dataIndex = startResp.columns.indexOf("segmentData");
+    result.ids.push(String(startResp.data[0][idIndex]));
+    result.names.push(String(startResp.data[0][nameIndex] ?? ""));
+    result.datas.push(String(startResp.data[0][dataIndex] ?? ""));
+
+    const visited = new Set<string>(result.ids);
+    for (let i = 1; i < nodeCount; i++) {
+      const currentId = result.ids[result.ids.length - 1];
+      const stepResp = (await this._db.runQueryPromised(
+        `
+          MATCH (s:SEGMENT)-[]-(n:SEGMENT)
+          WHERE elementId(s) = ${this.cypherString(currentId)}
+          WITH n, rand() AS r
+          ORDER BY r
+          LIMIT 10
+          RETURN elementId(n) AS id, n.segmentName AS segmentName, n.segmentData AS segmentData
+        `,
+        DbResponseType.table,
+        false,
+      )) as TableResponse;
+      if (!stepResp.data || stepResp.data.length < 1) {
+        break;
+      }
+      const stepIdIndex = stepResp.columns.indexOf("id");
+      const stepNameIndex = stepResp.columns.indexOf("segmentName");
+      const stepDataIndex = stepResp.columns.indexOf("segmentData");
+      let next: { id: string; name: string; data: string } | undefined;
+      for (const row of stepResp.data) {
+        const id = String(row[stepIdIndex]);
+        if (!visited.has(id)) {
+          next = {
+            id,
+            name: String(row[stepNameIndex] ?? ""),
+            data: String(row[stepDataIndex] ?? ""),
+          };
+          break;
+        }
+      }
+      if (!next) {
+        const row = stepResp.data[0];
+        next = {
+          id: String(row[stepIdIndex]),
+          name: String(row[stepNameIndex] ?? ""),
+          data: String(row[stepDataIndex] ?? ""),
+        };
+      }
+      visited.add(next.id);
+      result.ids.push(next.id);
+      result.names.push(next.name);
+      result.datas.push(next.data);
+    }
+    return result;
+  }
+
+  private async resolveProcedureSeeds(
+    options: BenchmarkOptions,
+    globalSeeds: BenchmarkSeed[],
+  ): Promise<BenchmarkSeed[] | null> {
+    if (!options.useProcedurePool) {
+      return null;
+    }
+    const selected = new Set(options.selectedCases);
+    if (
+      !selected.has("pg2-graph-of-interest") &&
+      !selected.has("pg2-common-stream")
+    ) {
+      return null;
+    }
+    if (globalSeeds.length < 1) {
+      return null;
+    }
+
+    const MAX_ANCHORS = 5;
+    const POOL_PER_ANCHOR_LIMIT = 5000;
+    const radius = Math.max(1, Math.floor(options.procedurePoolRadius));
+    const threshold = Math.max(1, Math.floor(options.procedurePoolMinNodes));
+    const seedCount = Math.max(2, Math.floor(options.seedCount));
+
+    const anchors = await this.fetchCandidateAnchors(options, MAX_ANCHORS);
+    if (anchors.length < 1) {
+      return null;
+    }
+    const anchorIds = new Set(anchors.map((a) => a.id));
+
+    const pool = new Map<string, ProcedurePoolNode>();
+    for (const anchor of anchors) {
+      const neighbors = await this.fetchAnchorNeighborhood(
+        anchor.id,
+        radius,
+        POOL_PER_ANCHOR_LIMIT,
+      );
+      for (const n of neighbors) {
+        if (anchorIds.has(n.id)) {
+          continue;
+        }
+        const existing = pool.get(n.id);
+        if (!existing || n.distance > existing.distance) {
+          pool.set(n.id, n);
+        }
+      }
+      if (pool.size >= threshold) {
+        break;
+      }
+    }
+
+    if (pool.size < 1) {
+      return null;
+    }
+
+    const sorted = Array.from(pool.values()).sort(
+      (a, b) => b.distance - a.distance,
+    );
+    return sorted.slice(0, seedCount).map((n) => ({
+      id: n.id,
+      segmentName: n.segmentName,
+      degree: undefined,
+    }));
+  }
+
+  private async fetchCandidateAnchors(
+    options: BenchmarkOptions,
+    maxAnchors: number,
+  ): Promise<BenchmarkSeed[]> {
+    const userNames = options.seedSegmentNames.filter((x) => x.length > 0);
+    let query: string;
+    if (userNames.length > 0) {
+      query = `
+        MATCH (s:SEGMENT)
+        WHERE s.segmentName IN [${userNames
+          .map((x) => this.cypherString(x))
+          .join(",")}]
+        OPTIONAL MATCH (s)-[r]-()
+        WITH s, count(r) AS degree
+        RETURN elementId(s) AS id, s.segmentName AS segmentName, degree
+        ORDER BY degree DESC
+        LIMIT ${maxAnchors}
+      `;
+    } else {
+      query = `
+        MATCH (s:SEGMENT)-[r]-()
+        WITH s, count(r) AS degree
+        RETURN elementId(s) AS id, s.segmentName AS segmentName, degree
+        ORDER BY degree DESC
+        LIMIT ${maxAnchors}
+      `;
+    }
+    const response = (await this._db.runQueryPromised(
+      query,
+      DbResponseType.table,
+      false,
+    )) as TableResponse;
+    return this.tableRowsToSeeds(response);
+  }
+
+  private async fetchAnchorNeighborhood(
+    anchorId: string,
+    radius: number,
+    limit: number,
+  ): Promise<ProcedurePoolNode[]> {
+    const response = (await this._db.runQueryPromised(
+      `
+        MATCH (anchor:SEGMENT) WHERE elementId(anchor) = ${this.cypherString(anchorId)}
+        MATCH p = shortestPath((anchor)-[*1..${radius}]-(neighbor:SEGMENT))
+        WHERE anchor <> neighbor
+        RETURN elementId(neighbor) AS id,
+               neighbor.segmentName AS segmentName,
+               length(p) AS distance
+        ORDER BY distance DESC, neighbor.segmentName ASC
+        LIMIT ${limit}
+      `,
+      DbResponseType.table,
+      false,
+    )) as TableResponse;
+    const idIdx = response.columns.indexOf("id");
+    const nameIdx = response.columns.indexOf("segmentName");
+    const distIdx = response.columns.indexOf("distance");
+    if (idIdx < 0 || distIdx < 0) {
+      return [];
+    }
+    return response.data.map((row) => ({
+      id: String(row[idIdx]),
+      segmentName: nameIdx >= 0 ? String(row[nameIdx] ?? "") : "",
+      distance: Number(row[distIdx] ?? 0),
+    }));
   }
 
   private async resolveSeeds(options: BenchmarkOptions): Promise<BenchmarkSeed[]> {

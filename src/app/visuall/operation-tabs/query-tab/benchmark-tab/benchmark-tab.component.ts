@@ -23,6 +23,8 @@ export class BenchmarkTabComponent {
   graphLimitsText = "";
   neighborhoodRadiiText = "";
   seedNamesText = "";
+  customSequenceLengthsText = "";
+  customChainMaxJumpLengthsText = "";
   isRunning = false;
   status = "";
   results: BenchmarkRunResult[] = [];
@@ -31,6 +33,10 @@ export class BenchmarkTabComponent {
     this.options = this._benchmarkService.getDefaultOptions();
     this.graphLimitsText = this.options.graphLimits.join(", ");
     this.neighborhoodRadiiText = this.options.neighborhoodRadii.join(", ");
+    this.customSequenceLengthsText =
+      this.options.customSequenceLengths.join(", ");
+    this.customChainMaxJumpLengthsText =
+      this.options.customChainMaxJumpLengths.join(", ");
     this.caseSelections = BENCHMARK_CASES.map((x) => ({
       ...x,
       selected: this.options.selectedCases.includes(x.key),
@@ -115,6 +121,14 @@ export class BenchmarkTabComponent {
       this.neighborhoodRadiiText,
       this.options.neighborhoodRadii,
     );
+    this.options.customSequenceLengths = this.parsePositiveInts(
+      this.customSequenceLengthsText,
+      this.options.customSequenceLengths,
+    );
+    this.options.customChainMaxJumpLengths = this.parseNonNegativeInts(
+      this.customChainMaxJumpLengthsText,
+      this.options.customChainMaxJumpLengths,
+    );
     this.options.seedSegmentNames = this.parseList(this.seedNamesText);
     this.options.selectedCases = this.caseSelections
       .filter((x) => x.selected)
@@ -137,6 +151,26 @@ export class BenchmarkTabComponent {
       1000,
       Number(this.options.layoutTimeoutMs) || 1000,
     );
+    this.options.customNameSampleCount = Math.max(
+      1,
+      Number(this.options.customNameSampleCount) || 1,
+    );
+    this.options.customChainNodeCount = Math.max(
+      2,
+      Number(this.options.customChainNodeCount) || 2,
+    );
+    this.options.customChainMinSubsequenceMatchLength = Math.max(
+      0,
+      Number(this.options.customChainMinSubsequenceMatchLength) || 0,
+    );
+    this.options.procedurePoolRadius = Math.max(
+      1,
+      Number(this.options.procedurePoolRadius) || 1,
+    );
+    this.options.procedurePoolMinNodes = Math.max(
+      1,
+      Number(this.options.procedurePoolMinNodes) || 1,
+    );
   }
 
   private parsePositiveInts(text: string, fallback: number[]): number[] {
@@ -144,6 +178,15 @@ export class BenchmarkTabComponent {
       .split(/[\s,;]+/)
       .map((x) => Number(x.trim()))
       .filter((x) => Number.isFinite(x) && x > 0)
+      .map((x) => Math.floor(x));
+    return parsed.length > 0 ? parsed : fallback;
+  }
+
+  private parseNonNegativeInts(text: string, fallback: number[]): number[] {
+    const parsed = text
+      .split(/[\s,;]+/)
+      .map((x) => Number(x.trim()))
+      .filter((x) => Number.isFinite(x) && x >= 0)
       .map((x) => Math.floor(x));
     return parsed.length > 0 ? parsed : fallback;
   }

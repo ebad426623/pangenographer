@@ -45,8 +45,8 @@ After startup, PG2 can connect to the local database using the configuration in 
 [import_gfa_docker.sh](import_gfa_docker.sh) builds a one-shot image from [Dockerfile.importer](Dockerfile.importer), runs the import against the Neo4j instance on the host, and removes both the container (`--rm`) and the image when the import finishes or fails.
 
 ```sh
-./import_gfa_docker.sh sample_1.gfa --clear
-./import_gfa_docker.sh sample_1.gfa --password 12345678 --batch-size 100000
+./import_gfa_docker.sh sample.gfa --clear
+./import_gfa_docker.sh sample.gfa --password 12345678 --batch-size 100000
 ```
 
 Any flag supported by the Python importer can be appended — they are forwarded to the script inside the container. The default `--uri` targets `bolt://host.docker.internal:7687` so the container reaches Neo4j running on the host (works on macOS, Windows, and Linux via a host-gateway mapping). Override with `--uri bolt://<host>:7687` to point at a remote Neo4j instance.
@@ -55,8 +55,8 @@ Any flag supported by the Python importer can be appended — they are forwarded
 
 ```sh
 pip install neo4j
-python import_gfa_to_neo4j.py sample_1.gfa --clear
-python import_gfa_to_neo4j.py sample_1.gfa --uri bolt://localhost:7687 --password 12345678 --batch-size 100000
+python import_gfa_to_neo4j.py sample.gfa --clear
+python import_gfa_to_neo4j.py sample.gfa --uri bolt://localhost:7687 --password 12345678 --batch-size 100000
 ```
 
 Run `python import_gfa_to_neo4j.py --help` for the full flag list.
