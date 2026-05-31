@@ -5,7 +5,7 @@ import {
   ViewChild,
 } from "@angular/core";
 import { NgbActiveModal } from "@ng-bootstrap/ng-bootstrap";
-import { USER_GUIDE_URL } from "../../constants";
+import { DEMO_VIDEO_URL, USER_GUIDE_URL } from "../../constants";
 
 @Component({
   selector: "app-quick-help-modal",
@@ -15,6 +15,7 @@ import { USER_GUIDE_URL } from "../../constants";
 export class QuickHelpModalComponent implements AfterViewChecked {
   @ViewChild("closeBtn", { static: false }) closeButtonRef: ElementRef;
   readonly userGuideUrl = USER_GUIDE_URL;
+  readonly demoVideoUrl = DEMO_VIDEO_URL;
 
   constructor(public activeModal: NgbActiveModal) {}
 

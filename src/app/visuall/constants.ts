@@ -136,6 +136,8 @@ export const SAMPLE_DATABASES = [
 export const USER_GUIDE_URL =
   "https://docs.google.com/document/d/1mcU4-yAy6IvdUOxchygTyjTWp144sjvDrJE_gzmAbmA/edit?usp=sharing";
 
+export const DEMO_VIDEO_URL = "https://www.youtube.com/watch?v=yCd7-aGY6CQ";
+
 export const CYPHER_WRITE_QUERY_TYPES = [
   "CREATE",
   "MERGE",
